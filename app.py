@@ -47,13 +47,10 @@ def extract_id(text):
     return match.group() if match else None
 
 def get_pdf_images_base64(file_bytes):
-    """
-    【升级版】读取 PDF 的每一页，并转换为 Base64 图片列表
-    """
+    """读取 PDF 的每一页，并转换为 Base64 图片列表"""
     images_b64 = []
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
-        # 循环处理每一页
         for page_num in range(len(doc)):
             page = doc[page_num]
             # 2倍缩放以保证 OCR 清晰度
@@ -67,17 +64,12 @@ def get_pdf_images_base64(file_bytes):
         return []
 
 def call_vl_ocr(api_key, file_bytes, filename):
-    """
-    调用视觉大模型进行 OCR (支持多页)
-    """
-    # 1. 准备图片数据列表
+    """调用视觉大模型进行 OCR (支持多页)"""
     base64_list = []
-    
     if filename.lower().endswith('.pdf'):
         base64_list = get_pdf_images_base64(file_bytes)
         mime = "image/png"
     else:
-        # 单张图片处理
         b64 = base64.b64encode(file_bytes).decode("utf-8")
         base64_list = [b64]
         mime = "image/jpeg"
@@ -87,10 +79,7 @@ def call_vl_ocr(api_key, file_bytes, filename):
     url = "https://api.siliconflow.cn/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     
-    # 2. 构建多图消息体
     content_payload = [{"type": "text", "text": "请识别以下所有图片中的文字，按顺序拼接，保持原有排版格式，输出 Markdown。"}]
-    
-    # 将每一页都加进去
     for b64_img in base64_list:
         content_payload.append({
             "type": "image_url",
@@ -106,7 +95,6 @@ def call_vl_ocr(api_key, file_bytes, filename):
     }
     
     try:
-        # 因为图片多，可能传输慢，设置较长的超时
         resp = requests.post(url, headers=headers, json=payload, timeout=180)
         if resp.status_code != 200: return f"OCR API 错误 {resp.status_code}: {resp.text}"
         return resp.json()['choices'][0]['message']['content']
@@ -114,11 +102,10 @@ def call_vl_ocr(api_key, file_bytes, filename):
         return f"OCR 请求异常: {str(e)}"
 
 def call_ai_grader(api_key, content):
-    """调用 API 进行评分 (已切换为更快的 Qwen2.5)"""
+    """调用 API 进行评分 (Qwen2.5)"""
     url = "https://api.siliconflow.cn/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
-        # 🚀 切换为 Qwen2.5-72B，速度更快
         "model": "Qwen/Qwen2.5-72B-Instruct",
         "messages": [
             {"role": "system", "content": "你是一位严格的大学助教。"},
@@ -132,11 +119,10 @@ def call_ai_grader(api_key, content):
         return "评分服务超时或失败"
 
 def call_chat_bot(api_key, messages):
-    """调用 API 进行对话 (已切换为更快的 Qwen2.5)"""
+    """调用 API 进行对话 (Qwen2.5)"""
     url = "https://api.siliconflow.cn/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
-        # 🚀 切换为 Qwen2.5-72B
         "model": "Qwen/Qwen2.5-72B-Instruct",
         "messages": messages,
         "stream": False 
@@ -154,9 +140,15 @@ def call_chat_bot(api_key, messages):
 with st.sidebar:
     st.header("🛠️ 设置与上传")
     
-    # --- 🔑 直接使用明文 Key，不再报错 ---
-    default_key = "sk-mbmefdriwcavkosajtsgssddeerqiccggiuxmysydsnalghm"
-    api_key = st.text_input("SiliconFlow API Key", value=default_key, type="password")
+    # --- 🔑 改动点：用户手动输入 Key ---
+    api_key = st.text_input(
+        "🔑 请输入 SiliconFlow API Key", 
+        type="password",
+        help="请前往硅基流动官网获取您的 API Key"
+    )
+    
+    if not api_key:
+        st.warning("⚠️ 请先输入 API Key 才能使用 AI 功能")
     
     st.divider()
     
@@ -286,7 +278,6 @@ with tab3:
         if "last_sel_file" not in st.session_state:
             st.session_state.last_sel_file = sel_file
         
-        # 如果切换了文件，重置状态
         if st.session_state.last_sel_file != sel_file:
             st.session_state.current_analysis = None
             st.session_state.chat_messages = []
@@ -298,29 +289,32 @@ with tab3:
             st.session_state.chat_messages = []
 
         # --- 按钮与核心逻辑 ---
-        if st.button("🚀 开始全页分析", type="primary"):
-            target_f = files_map[sel_file]
-            target_f.seek(0)
-            file_data = target_f.read()
-            
-            with st.status("AI 正在全力处理...", expanded=True) as status:
-                st.write("👀 正在阅读作业所有页面 (多页OCR)...")
-                # 调用多页OCR
-                ocr_res = call_vl_ocr(api_key, file_data, sel_file)
+        # 只有当用户输入了 key 时才显示可点击的按钮
+        if api_key:
+            if st.button("🚀 开始全页分析", type="primary"):
+                target_f = files_map[sel_file]
+                target_f.seek(0)
+                file_data = target_f.read()
                 
-                if "❌" in ocr_res or "API 错误" in ocr_res:
-                    status.update(label="处理失败", state="error")
-                    st.error(ocr_res)
-                else:
-                    st.write("🧠 正在评分 (Qwen2.5)...")
-                    eval_res = call_ai_grader(api_key, ocr_res)
-                    status.update(label="分析完成", state="complete")
+                with st.status("AI 正在全力处理...", expanded=True) as status:
+                    st.write("👀 正在阅读作业所有页面 (多页OCR)...")
+                    ocr_res = call_vl_ocr(api_key, file_data, sel_file)
                     
-                    st.session_state.current_analysis = {
-                        "ocr": ocr_res,
-                        "eval": eval_res
-                    }
-                    st.session_state.chat_messages = []
+                    if "❌" in ocr_res or "API 错误" in ocr_res:
+                        status.update(label="处理失败", state="error")
+                        st.error(ocr_res)
+                    else:
+                        st.write("🧠 正在评分 (Qwen2.5)...")
+                        eval_res = call_ai_grader(api_key, ocr_res)
+                        status.update(label="分析完成", state="complete")
+                        
+                        st.session_state.current_analysis = {
+                            "ocr": ocr_res,
+                            "eval": eval_res
+                        }
+                        st.session_state.chat_messages = []
+        else:
+            st.error("🔒 请先在左侧侧边栏输入 SiliconFlow API Key 才能开始分析")
 
         # --- 结果与聊天 ---
         if st.session_state.current_analysis:
@@ -344,29 +338,32 @@ with tab3:
                     st.markdown(msg["content"])
 
             if prompt := st.chat_input("输入问题..."):
-                st.session_state.chat_messages.append({"role": "user", "content": prompt})
-                with st.chat_message("user"):
-                    st.markdown(prompt)
+                if not api_key:
+                    st.toast("请先输入 API Key", icon="🔒")
+                else:
+                    st.session_state.chat_messages.append({"role": "user", "content": prompt})
+                    with st.chat_message("user"):
+                        st.markdown(prompt)
 
-                system_prompt = f"""
-                你是一个作业辅导助手。
-                【作业全文内容】：
-                {data['ocr']}
-                
-                【评分结果】：
-                {data['eval']}
-                
-                请基于以上信息回答用户提问。
-                """
-                
-                api_messages = [{"role": "system", "content": system_prompt}] + st.session_state.chat_messages
+                    system_prompt = f"""
+                    你是一个作业辅导助手。
+                    【作业全文内容】：
+                    {data['ocr']}
+                    
+                    【评分结果】：
+                    {data['eval']}
+                    
+                    请基于以上信息回答用户提问。
+                    """
+                    
+                    api_messages = [{"role": "system", "content": system_prompt}] + st.session_state.chat_messages
 
-                with st.chat_message("assistant"):
-                    with st.spinner("思考中..."):
-                        response = call_chat_bot(api_key, api_messages)
-                        st.markdown(response)
-                
-                st.session_state.chat_messages.append({"role": "assistant", "content": response})
+                    with st.chat_message("assistant"):
+                        with st.spinner("思考中..."):
+                            response = call_chat_bot(api_key, api_messages)
+                            st.markdown(response)
+                    
+                    st.session_state.chat_messages.append({"role": "assistant", "content": response})
 
 with st.expander("🛠️ 调试面板"):
     st.write(f"花名册解析人数: {len(all_students)}")
